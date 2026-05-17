@@ -1,0 +1,13 @@
+<resources>
+    <style name="Theme.DoseKeeper" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#F8FAFC</item>
+        <item name="android:statusBarColor">#F8FAFC</item>
+    </style>
+
+    <style name="Theme.DoseKeeper.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.DoseKeeper</item>
+    </style>
+</resources>
