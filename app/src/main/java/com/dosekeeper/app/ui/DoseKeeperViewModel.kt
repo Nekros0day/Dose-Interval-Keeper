@@ -4,116 +4,162 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.dosekeeper.app.data.DoseItem
+import com.dosekeeper.app.data.DosePlanGroup
 import com.dosekeeper.app.data.DoseRepository
 import com.dosekeeper.app.data.DoseState
-import com.dosekeeper.app.data.SecureNoteStore
-import com.dosekeeper.app.data.SupplementGroup
+import com.dosekeeper.app.data.InteractionRule
 import com.dosekeeper.app.data.SupplementTemplate
+import com.dosekeeper.app.data.TimingPreference
 import com.dosekeeper.app.notifications.DoseNotificationManager
 import com.dosekeeper.app.scheduling.SupplementScheduler
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 
 data class DoseKeeperUiState(
     val doseState: DoseState = DoseState(),
     val templates: List<SupplementTemplate> = emptyList(),
-    val plan: List<SupplementGroup> = emptyList(),
-    val unlockedNotes: Map<String, String> = emptyMap(),
-    val noteError: String? = null,
+    val interactions: List<InteractionRule> = emptyList(),
+    val plan: List<DosePlanGroup> = emptyList(),
 )
 
 class DoseKeeperViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = DoseRepository(application)
-    private val secureNotes = SecureNoteStore(application)
-    private val unlockedNotes = MutableStateFlow<Map<String, String>>(emptyMap())
-    private val noteError = MutableStateFlow<String?>(null)
 
-    val uiState: StateFlow<DoseKeeperUiState> = combine(
-        repository.state,
-        unlockedNotes,
-        noteError,
-    ) { doseState, notes, error ->
+    val uiState: StateFlow<DoseKeeperUiState> = repository.state.map { doseState ->
         DoseKeeperUiState(
             doseState = doseState,
             templates = repository.templates(),
+            interactions = repository.interactions(),
             plan = SupplementScheduler.buildPlan(
                 items = doseState.activeItems,
                 templates = repository.templates(),
-                rules = repository.conflicts(),
+                rules = repository.interactions(),
+                quietStartMinute = doseState.quietStartMinute,
+                quietEndMinute = doseState.quietEndMinute,
             ),
-            unlockedNotes = notes,
-            noteError = error,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = DoseKeeperUiState(
-            doseState = repository.state.value,
-            templates = repository.templates(),
-            plan = SupplementScheduler.buildPlan(
-                items = repository.state.value.activeItems,
-                templates = repository.templates(),
-                rules = repository.conflicts(),
-            ),
-        ),
+        initialValue = buildUiState(repository.state.value),
     )
 
     init {
-        DoseNotificationManager.ensureChannels(application)
-        DoseNotificationManager.scheduleAll(application, repository)
+        reschedule()
     }
 
-    fun addMedication(name: String, intervalMinutes: Int) {
-        repository.addMedication(name, intervalMinutes)
-        DoseNotificationManager.scheduleAll(getApplication(), repository)
+    fun addMedication(
+        name: String,
+        intervalMinutes: Int,
+        timingPreference: TimingPreference,
+        targetMinuteOfDay: Int?,
+    ) {
+        repository.addMedication(name, intervalMinutes, timingPreference, targetMinuteOfDay)
+        reschedule()
+    }
+
+    fun addCustomSupplement(
+        name: String,
+        intervalMinutes: Int,
+        timingPreference: TimingPreference,
+        targetMinuteOfDay: Int?,
+        description: String,
+    ) {
+        repository.addCustomSupplement(name, intervalMinutes, timingPreference, targetMinuteOfDay, description)
+        reschedule()
     }
 
     fun addSupplement(templateId: String) {
         repository.addSupplement(templateId)
-        DoseNotificationManager.scheduleAll(getApplication(), repository)
+        reschedule()
+    }
+
+    fun addSupplements(templateIds: List<String>) {
+        templateIds.distinct().forEach { repository.addSupplement(it) }
+        reschedule()
+    }
+
+    fun updateItemSchedule(
+        item: DoseItem,
+        name: String,
+        intervalMinutes: Int,
+        timingPreference: TimingPreference,
+        targetMinuteOfDay: Int?,
+        description: String,
+    ) {
+        repository.updateItemSchedule(
+            itemId = item.id,
+            name = name,
+            intervalMinutes = intervalMinutes,
+            timingPreference = timingPreference,
+            targetMinuteOfDay = targetMinuteOfDay,
+            description = description,
+        )
+        reschedule()
     }
 
     fun removeItem(item: DoseItem) {
         repository.removeItem(item.id)
-        unlockedNotes.update { it - item.id }
-        DoseNotificationManager.scheduleAll(getApplication(), repository)
+        reschedule()
     }
 
     fun recordDose(item: DoseItem) {
-        val touched = repository.recordDose(listOf(item.id))
-        touched.forEach { DoseNotificationManager.showCountdown(getApplication(), it) }
-        DoseNotificationManager.scheduleAll(getApplication(), repository)
+        repository.recordDose(listOf(item.id))
+        reschedule()
     }
 
     fun recordGroup(itemIds: List<String>) {
-        val touched = repository.recordDose(itemIds)
-        touched.forEach { DoseNotificationManager.showCountdown(getApplication(), it) }
+        repository.recordDose(itemIds)
+        reschedule()
+    }
+
+    fun addInteraction(firstItemId: String, secondItemId: String, separationMinutes: Int, reason: String) {
+        repository.addInteraction(firstItemId, secondItemId, separationMinutes, reason)
+        reschedule()
+    }
+
+    fun deleteInteraction(ruleId: String) {
+        repository.deleteInteraction(ruleId)
+        reschedule()
+    }
+
+    fun updateInteraction(ruleId: String, firstItemId: String, secondItemId: String, separationMinutes: Int, reason: String) {
+        repository.updateInteraction(ruleId, firstItemId, secondItemId, separationMinutes, reason)
+        reschedule()
+    }
+
+    fun clearHistory() {
+        repository.clearHistory()
+        reschedule()
+    }
+
+    fun setHistoryRetentionDays(days: Int?) {
+        repository.setHistoryRetentionDays(days)
+        reschedule()
+    }
+
+    fun setQuietHours(startMinute: Int, endMinute: Int) {
+        repository.setQuietHours(startMinute, endMinute)
+        reschedule()
+    }
+
+    private fun reschedule() {
+        DoseNotificationManager.ensureChannels(getApplication())
         DoseNotificationManager.scheduleAll(getApplication(), repository)
     }
 
-    fun unlockNotes(itemId: String) {
-        runCatching { secureNotes.readNote(itemId) }
-            .onSuccess { note ->
-                noteError.value = null
-                unlockedNotes.update { it + (itemId to note) }
-            }
-            .onFailure {
-                noteError.value = "Could not unlock notes on this device."
-            }
-    }
-
-    fun saveNote(itemId: String, note: String) {
-        runCatching { secureNotes.saveNote(itemId, note) }
-            .onSuccess {
-                noteError.value = null
-                unlockedNotes.update { it + (itemId to note) }
-            }
-            .onFailure {
-                noteError.value = "Could not save encrypted note."
-            }
-    }
+    private fun buildUiState(doseState: DoseState): DoseKeeperUiState = DoseKeeperUiState(
+        doseState = doseState,
+        templates = repository.templates(),
+        interactions = repository.interactions(),
+        plan = SupplementScheduler.buildPlan(
+            items = doseState.activeItems,
+            templates = repository.templates(),
+            rules = repository.interactions(),
+            quietStartMinute = doseState.quietStartMinute,
+            quietEndMinute = doseState.quietEndMinute,
+        ),
+    )
 }

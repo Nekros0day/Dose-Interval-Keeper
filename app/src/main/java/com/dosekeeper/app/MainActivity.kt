@@ -5,81 +5,119 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.fragment.app.FragmentActivity
+import com.dosekeeper.app.data.DoseRepository
 import com.dosekeeper.app.notifications.DoseNotificationManager
 import com.dosekeeper.app.ui.DoseKeeperApp
 import com.dosekeeper.app.ui.DoseKeeperTheme
 import com.dosekeeper.app.ui.DoseKeeperViewModel
-import java.util.concurrent.Executor
+import com.google.android.gms.ads.AdError
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.FullScreenContentCallback
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 
-class MainActivity : FragmentActivity() {
+class MainActivity : ComponentActivity() {
     private val viewModel: DoseKeeperViewModel by viewModels()
-    private lateinit var executor: Executor
+    private val notificationsAllowed = mutableStateOf(false)
+    private var quizInterstitialAd: InterstitialAd? = null
+    private var loadingQuizInterstitial = false
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        DoseNotificationManager.scheduleAll(this, com.dosekeeper.app.data.DoseRepository(this))
+        notificationsAllowed.value = hasNotificationPermission()
+        DoseNotificationManager.scheduleAll(this, DoseRepository(this))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        executor = ContextCompat.getMainExecutor(this)
+        MobileAds.initialize(this)
+        loadQuizInterstitial()
         DoseNotificationManager.ensureChannels(this)
+        notificationsAllowed.value = hasNotificationPermission()
         requestNotificationsIfNeeded()
 
         setContent {
             DoseKeeperTheme {
                 DoseKeeperApp(
                     viewModel = viewModel,
+                    notificationsAllowed = notificationsAllowed.value,
                     onRequestNotificationPermission = ::requestNotificationsIfNeeded,
-                    onAuthenticateNotes = ::authenticateForNotes,
+                    onQuizCompleted = ::showQuizInterstitial,
                 )
             }
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        notificationsAllowed.value = hasNotificationPermission()
+    }
+
     private fun requestNotificationsIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            !hasNotificationPermission()
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    private fun authenticateForNotes(itemId: String) {
-        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
-            BiometricManager.Authenticators.DEVICE_CREDENTIAL
-        val biometricManager = BiometricManager.from(this)
-        if (biometricManager.canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
-            viewModel.unlockNotes(itemId)
-            return
-        }
+    private fun hasNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-        val prompt = BiometricPrompt(
+    private fun loadQuizInterstitial(showWhenReady: Boolean = false) {
+        if (loadingQuizInterstitial || quizInterstitialAd != null) return
+        loadingQuizInterstitial = true
+        InterstitialAd.load(
             this,
-            executor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    super.onAuthenticationSucceeded(result)
-                    viewModel.unlockNotes(itemId)
+            QUIZ_INTERSTITIAL_AD_UNIT_ID,
+            AdRequest.Builder().build(),
+            object : InterstitialAdLoadCallback() {
+                override fun onAdLoaded(ad: InterstitialAd) {
+                    loadingQuizInterstitial = false
+                    quizInterstitialAd = ad
+                    if (showWhenReady) showQuizInterstitial()
+                }
+
+                override fun onAdFailedToLoad(error: LoadAdError) {
+                    loadingQuizInterstitial = false
+                    quizInterstitialAd = null
                 }
             },
         )
+    }
 
-        prompt.authenticate(
-            BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Unlock medication notes")
-                .setSubtitle("Notes stay encrypted on this device.")
-                .setAllowedAuthenticators(authenticators)
-                .build(),
-        )
+    private fun showQuizInterstitial() {
+        val ad = quizInterstitialAd
+        if (ad == null) {
+            loadQuizInterstitial(showWhenReady = true)
+            return
+        }
+
+        quizInterstitialAd = null
+        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+            override fun onAdDismissedFullScreenContent() {
+                loadQuizInterstitial()
+            }
+
+            override fun onAdFailedToShowFullScreenContent(adError: AdError) {
+                loadQuizInterstitial()
+            }
+        }
+        ad.show(this)
+    }
+
+    private companion object {
+        private const val QUIZ_INTERSTITIAL_AD_UNIT_ID = "ca-app-pub-3940256099942544/1033173712"
     }
 }

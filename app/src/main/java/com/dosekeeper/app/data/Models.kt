@@ -8,6 +8,16 @@ enum class DoseKind {
     Supplement,
 }
 
+enum class TimingPreference {
+    Anytime,
+    WithBreakfast,
+    WithLunch,
+    WithDinner,
+    WithFood,
+    EmptyStomach,
+    Bedtime,
+}
+
 data class DoseItem(
     val id: String,
     val name: String,
@@ -17,9 +27,11 @@ data class DoseItem(
     val lastDoseAtMillis: Long? = null,
     val supplementTemplateId: String? = null,
     val targetMinuteOfDay: Int? = null,
+    val timingPreference: TimingPreference = TimingPreference.Anytime,
+    val description: String = "",
     val active: Boolean = true,
 ) {
-    fun nextSafeAtMillis(): Long? = lastDoseAtMillis?.plus(intervalMinutes * 60_000L)
+    fun nextAllowedAtMillis(): Long? = lastDoseAtMillis?.plus(intervalMinutes * 60_000L)
 }
 
 data class DoseHistoryEntry(
@@ -30,9 +42,22 @@ data class DoseHistoryEntry(
     val takenAtMillis: Long,
 )
 
+data class InteractionRule(
+    val id: String,
+    val firstKey: String,
+    val secondKey: String,
+    val separationMinutes: Int,
+    val reason: String,
+    val editable: Boolean = true,
+)
+
 data class DoseState(
     val items: List<DoseItem> = emptyList(),
     val history: List<DoseHistoryEntry> = emptyList(),
+    val customInteractions: List<InteractionRule> = emptyList(),
+    val historyRetentionDays: Int? = 30,
+    val quietStartMinute: Int = minuteOfDay(22),
+    val quietEndMinute: Int = minuteOfDay(7),
 ) {
     val activeItems: List<DoseItem> = items.filter { it.active }
 }
@@ -40,30 +65,26 @@ data class DoseState(
 data class SupplementTemplate(
     val id: String,
     val name: String,
+    val category: String,
     val defaultIntervalMinutes: Int,
     val idealMinuteOfDay: Int,
+    val timingPreference: TimingPreference,
     val accentColor: Long,
-    val withFood: Boolean = false,
-    val avoidFoodMinutes: Int = 0,
-    val notes: String,
+    val description: String,
+    val timingNotes: String,
+    val interactionNotes: String,
 )
 
-data class ConflictRule(
-    val firstTemplateId: String,
-    val secondTemplateId: String,
-    val separationMinutes: Int,
-    val reason: String,
-)
-
-data class ScheduledSupplement(
+data class ScheduledDose(
     val item: DoseItem,
-    val minuteOfDay: Int,
+    val scheduledAtMillis: Long,
     val reason: String,
+    val notes: List<String>,
 )
 
-data class SupplementGroup(
-    val minuteOfDay: Int,
-    val entries: List<ScheduledSupplement>,
+data class DosePlanGroup(
+    val scheduledAtMillis: Long,
+    val entries: List<ScheduledDose>,
     val notes: List<String>,
 ) {
     val itemIds: List<String> = entries.map { it.item.id }

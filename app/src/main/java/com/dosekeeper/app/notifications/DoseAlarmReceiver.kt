@@ -14,8 +14,7 @@ class DoseAlarmReceiver : BroadcastReceiver() {
                     ?.split(",")
                     ?.filter { it.isNotBlank() }
                     .orEmpty()
-                val touched = repository.recordDose(ids)
-                touched.forEach { DoseNotificationManager.showCountdown(context, it) }
+                repository.recordDose(ids)
                 DoseNotificationManager.scheduleAll(context, repository)
                 DoseNotificationManager.cancelDueNotification(context, ids)
             }
@@ -25,16 +24,8 @@ class DoseAlarmReceiver : BroadcastReceiver() {
                     ?.split(",")
                     ?.filter { it.isNotBlank() }
                     .orEmpty()
-                val items = repository.state.value.items.filter { it.id in ids }
-                if (items.isNotEmpty()) {
-                    DoseNotificationManager.showDue(context, items)
-                }
-            }
-
-            DoseNotificationManager.ACTION_SHOW_SAFE -> {
-                val id = intent.getStringExtra(DoseNotificationManager.EXTRA_ITEM_IDS).orEmpty()
-                val item = repository.state.value.items.firstOrNull { it.id == id }
-                if (item != null) DoseNotificationManager.showSafeAgain(context, item)
+                val triggerAt = intent.getLongExtra(DoseNotificationManager.EXTRA_TRIGGER_AT, System.currentTimeMillis())
+                DoseNotificationManager.showDueIfCurrent(context, repository, ids, triggerAt)
             }
         }
     }
